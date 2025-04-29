@@ -1,0 +1,203 @@
+basePath: /
+definitions:
+  main.AttendanceHistory:
+    properties:
+      duration:
+        type: string
+      in_time:
+        type: string
+      name:
+        type: string
+      out_time:
+        type: string
+      rfid:
+        type: string
+    type: object
+  main.AttendanceRecord:
+    properties:
+      duration:
+        type: string
+      in_time:
+        type: string
+      out_time:
+        type: string
+      rfid:
+        type: string
+    type: object
+  main.Response:
+    properties:
+      data: {}
+      message:
+        type: string
+      status:
+        type: string
+    type: object
+  main.StudentPresence:
+    properties:
+      department:
+        type: string
+      in_time:
+        type: string
+      name:
+        type: string
+      rfid:
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: This is an attendance tracking system API using RFID
+  title: IoT Attendance System API
+  version: "1.0"
+paths:
+  /dashboard/history:
+    get:
+      consumes:
+      - application/json
+      description: Retrieves complete attendance history for all students
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Attendance history retrieved successfully
+          schema:
+            allOf:
+            - $ref: '#/definitions/main.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/main.AttendanceHistory'
+                  type: array
+              type: object
+        "500":
+          description: Failed to fetch attendance history
+          schema:
+            $ref: '#/definitions/main.Response'
+      summary: Get attendance history
+      tags:
+      - dashboard
+  /dashboard/present:
+    get:
+      consumes:
+      - application/json
+      description: Lists all students currently present in the facility
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Current students retrieved successfully
+          schema:
+            allOf:
+            - $ref: '#/definitions/main.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/main.StudentPresence'
+                  type: array
+              type: object
+        "500":
+          description: Failed to fetch current students
+          schema:
+            $ref: '#/definitions/main.Response'
+      summary: Get currently present students
+      tags:
+      - dashboard
+  /student/{rfid}/attendance:
+    get:
+      consumes:
+      - application/json
+      description: Retrieves attendance history for a specific student
+      parameters:
+      - description: Student RFID number
+        in: path
+        name: rfid
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Attendance records retrieved successfully
+          schema:
+            allOf:
+            - $ref: '#/definitions/main.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/main.AttendanceRecord'
+                  type: array
+              type: object
+        "404":
+          description: Student not found
+          schema:
+            $ref: '#/definitions/main.Response'
+        "500":
+          description: Failed to fetch attendance records
+          schema:
+            $ref: '#/definitions/main.Response'
+      summary: Get student attendance history
+      tags:
+      - students
+  /walkin/{rfid}:
+    post:
+      consumes:
+      - application/json
+      description: Records when a student enters using their RFID card
+      parameters:
+      - description: Student RFID number
+        in: path
+        name: rfid
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Walk-in registered successfully
+          schema:
+            type: string
+        "404":
+          description: Student not found
+          schema:
+            type: string
+        "500":
+          description: Failed to register walk-in
+          schema:
+            type: string
+      summary: Register student walk-in
+      tags:
+      - attendance
+  /walkout/{rfid}:
+    post:
+      consumes:
+      - application/json
+      description: Records when a student exits using their RFID card
+      parameters:
+      - description: Student RFID number
+        in: path
+        name: rfid
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Walk-out registered successfully
+          schema:
+            type: string
+        "400":
+          description: No active walk-in found for walk-out
+          schema:
+            type: string
+        "404":
+          description: Student not found
+          schema:
+            type: string
+        "500":
+          description: Failed to register walk-out
+          schema:
+            type: string
+      summary: Register student walk-out
+      tags:
+      - attendance
+swagger: "2.0"

@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,10 +11,47 @@ import (
 	"github.com/gorilla/mux"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/rs/cors"
+	httpSwagger "github.com/swaggo/http-swagger"
+
+	// Replace it with your actual module path
+	_ "rfidattendance/docs"
 )
+
+type Response struct {
+	Status  string      `json:"status"`
+	Message string      `json:"message"`
+	Data    interface{} `json:"data,omitempty"`
+}
+
+type AttendanceRecord struct {
+	RFID     string `json:"rfid"`
+	InTime   string `json:"in_time"`
+	OutTime  string `json:"out_time,omitempty"`
+	Duration string `json:"duration,omitempty"`
+}
+
+type StudentPresence struct {
+	RFID       string `json:"rfid"`
+	Name       string `json:"name"`
+	Department string `json:"department"`
+	InTime     string `json:"in_time"`
+}
+
+type AttendanceHistory struct {
+	RFID     string `json:"rfid"`
+	Name     string `json:"name"`
+	InTime   string `json:"in_time"`
+	OutTime  string `json:"out_time,omitempty"`
+	Duration string `json:"duration,omitempty"`
+}
 
 var db *sql.DB
 
+// @title IoT Attendance System API
+// @version 1.0
+// @description This is an attendance tracking system API using RFID
+// @host localhost:8080
+// @BasePath /
 func main() {
 	var err error
 
@@ -21,61 +59,101 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
 	}
+	defer db.Close()
 
 	r := mux.NewRouter()
 
+	// Swagger documentation endpoint
+	r.PathPrefix("/swagger/").Handler(httpSwagger.Handler(
+		httpSwagger.URL("http://localhost:8080/swagger/doc.json"),
+	))
+
+	// Register routes
 	r.HandleFunc("/walkin/{rfid}", WalkIn).Methods("POST")
 	r.HandleFunc("/walkout/{rfid}", WalkOut).Methods("POST")
 	r.HandleFunc("/student/{rfid}/attendance", GetStudentAttendance).Methods("GET")
 	r.HandleFunc("/dashboard/present", GetCurrentlyPresentStudents).Methods("GET")
 	r.HandleFunc("/dashboard/history", GetAttendanceHistory).Methods("GET")
 
-	// Create a CORS handler
+	// Setup CORS
 	c := cors.New(cors.Options{
-		AllowedOrigins:   []string{"*"}, // Allow all origins
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"*"}, // Allow all headers
-		AllowCredentials: true,
-		MaxAge:           300, // Maximum value not ignored by any of major browsers
+		AllowedOrigins: []string{"*"},
+		AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders: []string{"*"},
 	})
 
-	// Wrap the router with the CORS handler
+	// Start server
 	handler := c.Handler(r)
-
-	fmt.Println("Server started at :8080")
+	fmt.Println("Server starting on :8080")
 	log.Fatal(http.ListenAndServe(":8080", handler))
 }
 
-// Walk-in (register in-time)
+// @Summary Register student walk-in
+// @Description Records when a student enters using their RFID card
+// @Tags attendance
+// @Accept json
+// @Produce json
+// @Param rfid path string true "Student RFID number"
+// @Success 200 {string} string "Walk-in registered successfully"
+// @Failure 404 {string} string "Student not found"
+// @Failure 500 {string} string "Failed to register walk-in"
+// @Router /walkin/{rfid} [post]
 func WalkIn(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	vars := mux.Vars(r)
 	rfid := vars["rfid"]
 
 	var studentID int
 	err := db.QueryRow("SELECT id FROM students WHERE rfid_id = $1", rfid).Scan(&studentID)
 	if err != nil {
-		http.Error(w, "Student not found", http.StatusNotFound)
+		json.NewEncoder(w).Encode(Response{
+			Status:  "error",
+			Message: "Student not found",
+		})
+		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
 	_, err = db.Exec("INSERT INTO attendance (student_id, in_time) VALUES ($1, $2)", studentID, time.Now())
 	if err != nil {
-		http.Error(w, "Failed to register walk-in", http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(Response{
+			Status:  "error",
+			Message: "Failed to register walk-in",
+		})
 		return
 	}
 
-	w.Write([]byte("Walk-in registered successfully"))
+	json.NewEncoder(w).Encode(Response{
+		Status:  "success",
+		Message: "Walk-in registered successfully",
+	})
 }
 
-// Walk-out (register out-time and calculate total time)
+// @Summary Register student walk-out
+// @Description Records when a student exits using their RFID card
+// @Tags attendance
+// @Accept json
+// @Produce json
+// @Param rfid path string true "Student RFID number"
+// @Success 200 {string} string "Walk-out registered successfully"
+// @Failure 404 {string} string "Student not found"
+// @Failure 400 {string} string "No active walk-in found for walk-out"
+// @Failure 500 {string} string "Failed to register walk-out"
+// @Router /walkout/{rfid} [post]
 func WalkOut(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	vars := mux.Vars(r)
 	rfid := vars["rfid"]
 
 	var studentID int
 	err := db.QueryRow("SELECT id FROM students WHERE rfid_id = $1", rfid).Scan(&studentID)
 	if err != nil {
-		http.Error(w, "Student not found", http.StatusNotFound)
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(Response{
+			Status:  "error",
+			Message: "Student not found",
+		})
 		return
 	}
 
@@ -84,7 +162,11 @@ func WalkOut(w http.ResponseWriter, r *http.Request) {
 	err = db.QueryRow("SELECT id, in_time FROM attendance WHERE student_id = $1 AND out_time IS NULL ORDER BY in_time DESC LIMIT 1", studentID).
 		Scan(&attendanceID, &inTime)
 	if err != nil {
-		http.Error(w, "No active walk-in found for walk-out", http.StatusBadRequest)
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(Response{
+			Status:  "error",
+			Message: "No active walk-in found for walk-out",
+		})
 		return
 	}
 
@@ -93,115 +175,184 @@ func WalkOut(w http.ResponseWriter, r *http.Request) {
 
 	_, err = db.Exec("UPDATE attendance SET out_time = $1, total_duration = $2 WHERE id = $3", now, totalDuration, attendanceID)
 	if err != nil {
-		http.Error(w, "Failed to register walk-out", http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(Response{
+			Status:  "error",
+			Message: "Failed to register walk-out",
+		})
 		return
 	}
 
-	w.Write([]byte("Walk-out registered successfully"))
+	json.NewEncoder(w).Encode(Response{
+		Status:  "success",
+		Message: "Walk-out registered successfully",
+	})
 }
 
-// Get attendance history for a specific student
+// @Summary Get student attendance history
+// @Description Retrieves attendance history for a specific student
+// @Tags students
+// @Accept json
+// @Produce json
+// @Param rfid path string true "Student RFID number"
+// @Success 200 {object} Response{data=[]AttendanceRecord} "Attendance records retrieved successfully"
+// @Failure 404 {object} Response "Student not found"
+// @Failure 500 {object} Response "Failed to fetch attendance records"
+// @Router /student/{rfid}/attendance [get]
 func GetStudentAttendance(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	vars := mux.Vars(r)
 	rfid := vars["rfid"]
 
 	var studentID int
 	err := db.QueryRow("SELECT id FROM students WHERE rfid_id = $1", rfid).Scan(&studentID)
 	if err != nil {
-		http.Error(w, "Student not found", http.StatusNotFound)
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(Response{
+			Status:  "error",
+			Message: "Student not found",
+		})
 		return
 	}
 
-	rows, err := db.Query("SELECT in_time, out_time, total_duration FROM attendance WHERE student_id = $1 ORDER BY in_time DESC", studentID)
+	// Update the query to include rfid_id
+	rows, err := db.Query(`
+        SELECT s.rfid_id, a.in_time, a.out_time, a.total_duration 
+        FROM attendance a
+        JOIN students s ON s.id = a.student_id 
+        WHERE s.id = $1 
+        ORDER BY a.in_time DESC`, studentID)
 	if err != nil {
-		http.Error(w, "Failed to fetch attendance records", http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(Response{
+			Status:  "error",
+			Message: "Failed to fetch attendance records",
+		})
 		return
 	}
 	defer rows.Close()
 
-	var result string
+	var records []AttendanceRecord
 	for rows.Next() {
+		var rfid string
 		var inTime, outTime sql.NullTime
 		var totalDuration sql.NullString
-		err = rows.Scan(&inTime, &outTime, &totalDuration)
+		err = rows.Scan(&rfid, &inTime, &outTime, &totalDuration)
 		if err != nil {
 			continue
 		}
-		result += fmt.Sprintf("In: %v, Out: %v, Duration: %v\n", inTime.Time.Format(time.RFC3339), outTime.Time.Format(time.RFC3339), totalDuration.String)
+		records = append(records, AttendanceRecord{
+			RFID:     rfid,
+			InTime:   inTime.Time.Format(time.RFC3339),
+			OutTime:  outTime.Time.Format(time.RFC3339),
+			Duration: totalDuration.String,
+		})
 	}
 
-	if result == "" {
-		w.Write([]byte("No attendance records found"))
-		return
-	}
-
-	w.Write([]byte(result))
+	json.NewEncoder(w).Encode(Response{
+		Status:  "success",
+		Message: "Attendance records retrieved successfully",
+		Data:    records,
+	})
 }
 
-// Dashboard: Get currently present students
+// @Summary Get currently present students
+// @Description Lists all students currently present in the facility
+// @Tags dashboard
+// @Accept json
+// @Produce json
+// @Success 200 {object} Response{data=[]StudentPresence} "Current students retrieved successfully"
+// @Failure 500 {object} Response "Failed to fetch current students"
+// @Router /dashboard/present [get]
 func GetCurrentlyPresentStudents(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	rows, err := db.Query(`
-        SELECT s.name, s.department, a.in_time
+        SELECT s.rfid_id, s.name, s.department, a.in_time
         FROM students s
         JOIN attendance a ON s.id = a.student_id
         WHERE a.out_time IS NULL
         ORDER BY a.in_time
     `)
 	if err != nil {
-		http.Error(w, "Failed to fetch current students", http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(Response{
+			Status:  "error",
+			Message: "Failed to fetch current students",
+		})
 		return
 	}
 	defer rows.Close()
 
-	var result string
+	var students []StudentPresence
 	for rows.Next() {
-		var name, department string
+		var rfid, name, department string
 		var inTime time.Time
-		err = rows.Scan(&name, &department, &inTime)
+		err = rows.Scan(&rfid, &name, &department, &inTime)
 		if err != nil {
 			continue
 		}
-		result += fmt.Sprintf("Name: %s, Department: %s, In Time: %v\n", name, department, inTime.Format(time.RFC3339))
+		students = append(students, StudentPresence{
+			RFID:       rfid,
+			Name:       name,
+			Department: department,
+			InTime:     inTime.Format(time.RFC3339),
+		})
 	}
 
-	if result == "" {
-		w.Write([]byte("No students currently present"))
-		return
-	}
-
-	w.Write([]byte(result))
+	json.NewEncoder(w).Encode(Response{
+		Status:  "success",
+		Message: "Current students retrieved successfully",
+		Data:    students,
+	})
 }
 
-// Dashboard: Get full attendance history
+// @Summary Get attendance history
+// @Description Retrieves complete attendance history for all students
+// @Tags dashboard
+// @Accept json
+// @Produce json
+// @Success 200 {object} Response{data=[]AttendanceHistory} "Attendance history retrieved successfully"
+// @Failure 500 {object} Response "Failed to fetch attendance history"
+// @Router /dashboard/history [get]
 func GetAttendanceHistory(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	rows, err := db.Query(`
-        SELECT s.name, a.in_time, a.out_time, a.total_duration
+        SELECT s.rfid_id, s.name, a.in_time, a.out_time, a.total_duration
         FROM students s
         JOIN attendance a ON s.id = a.student_id
         ORDER BY a.in_time DESC
     `)
 	if err != nil {
-		http.Error(w, "Failed to fetch attendance history", http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(Response{
+			Status:  "error",
+			Message: "Failed to fetch attendance history",
+		})
 		return
 	}
 	defer rows.Close()
 
-	var result string
+	var history []AttendanceHistory
 	for rows.Next() {
-		var name string
+		var rfid, name string
 		var inTime, outTime sql.NullTime
 		var totalDuration sql.NullString
-		err = rows.Scan(&name, &inTime, &outTime, &totalDuration)
+		err = rows.Scan(&rfid, &name, &inTime, &outTime, &totalDuration)
 		if err != nil {
 			continue
 		}
-		result += fmt.Sprintf("Name: %s, In: %v, Out: %v, Duration: %v\n", name, inTime.Time.Format(time.RFC3339), outTime.Time.Format(time.RFC3339), totalDuration.String)
+		history = append(history, AttendanceHistory{
+			RFID:     rfid,
+			Name:     name,
+			InTime:   inTime.Time.Format(time.RFC3339),
+			OutTime:  outTime.Time.Format(time.RFC3339),
+			Duration: totalDuration.String,
+		})
 	}
 
-	if result == "" {
-		w.Write([]byte("No attendance history found"))
-		return
-	}
-
-	w.Write([]byte(result))
+	json.NewEncoder(w).Encode(Response{
+		Status:  "success",
+		Message: "Attendance history retrieved successfully",
+		Data:    history,
+	})
 }
