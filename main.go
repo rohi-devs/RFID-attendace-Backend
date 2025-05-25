@@ -29,7 +29,7 @@ var db *sql.DB
 func main() {
 	var err error
 
-	db, err = sql.Open("pgx", "postgresql://neondb_owner:npg_aSm2XKLDbu5J@ep-nameless-grass-a1hhakn0-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require")
+	db, err = sql.Open("pgx", "URL")
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
 	}
